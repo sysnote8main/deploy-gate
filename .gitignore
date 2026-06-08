@@ -1,2 +1,17 @@
+# Go binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/bin/
+
+# Go test
+*.test
+
+# Coverage
+*.out
+coverage.out
+
+# Environment
 .env
-./deploy-gate
