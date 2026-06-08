@@ -1,0 +1,14 @@
+services:
+  deploy-gate:
+    build: .
+    restart: unless-stopped
+
+    environment:
+      DEPLOY_SECRET: ${DEPLOY_SECRET}
+      QUEUE_DIR: /queue
+
+    volumes:
+      - ./queue:/queue
+
+    ports:
+      - "9000:9000"
