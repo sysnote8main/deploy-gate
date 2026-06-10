@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 )
 
 type Config struct {
@@ -43,8 +45,11 @@ func Load(path string) (*Config, error) {
 		if route.Script == "" {
 			return nil, fmt.Errorf("route script is required: %s", route.Path)
 		}
-		if route.Path[0] != '/' {
+		if !strings.HasPrefix(route.Path, "/") {
 			return nil, fmt.Errorf("route path must start with /: %s", route.Path)
+		}
+		if !filepath.IsAbs(route.Script) {
+			return nil, fmt.Errorf("route script must be absolute path: %s", route.Script)
 		}
 		if _, ok := seen[route.Path]; ok {
 			return nil, fmt.Errorf("duplicate route path: %s", route.Path)
