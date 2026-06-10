@@ -39,6 +39,8 @@ func Deploy(secret, script string) http.HandlerFunc {
 			return
 		}
 
+		log.Printf("deploy succeeded: script=%s", script)
+
 		w.WriteHeader(http.StatusNoContent)
 	}
 }

@@ -18,6 +18,10 @@ func main() {
 		log.Fatal("DEPLOY_SECRET is required")
 	}
 
+	if configPath == "" {
+		log.Fatal("DEPLOY_CONFIG is required")
+	}
+
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		log.Fatalf("failed to load config: %v", err)
