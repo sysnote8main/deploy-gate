@@ -2,16 +2,15 @@ package webhook
 
 import (
 	"io"
-	"log"
 	"net/http"
 
-	"github.com/t1nyb0x/deploy-gate/internal/queue"
+	"github.com/t1nyb0x/deploy-gate/internal/deploy"
 	"github.com/t1nyb0x/deploy-gate/internal/signature"
 )
 
 const maxBodySize = 1 << 20 // 1MB
 
-func Deploy(secret, queueFile string) http.HandlerFunc {
+func Deploy(secret, script string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "forbidden", http.StatusForbidden)
@@ -33,8 +32,7 @@ func Deploy(secret, queueFile string) http.HandlerFunc {
 			return
 		}
 
-		if err := queue.Deploy(queueFile); err != nil {
-			log.Printf("queue error: %v", err)
+		if err := deploy.Run(script); err != nil {
 			http.Error(w, "error", http.StatusInternalServerError)
 			return
 		}

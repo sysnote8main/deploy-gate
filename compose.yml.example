@@ -7,8 +7,5 @@ services:
       DEPLOY_SECRET: ${DEPLOY_SECRET}
       QUEUE_DIR: /queue
 
-    volumes:
-      - ./queue:/queue
-
     ports:
       - "9000:9000"

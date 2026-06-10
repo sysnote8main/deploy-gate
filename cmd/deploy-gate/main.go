@@ -4,7 +4,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/t1nyb0x/deploy-gate/internal/webhook"
@@ -21,10 +20,10 @@ func main() {
 		log.Fatal("QUEUE_DIR is required")
 	}
 
-	queueFile := filepath.Join(queueDir, "deploy.queue")
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/deploy", webhook.Deploy(secret, queueFile))
+	mux.HandleFunc("/deploy/bot", webhook.Deploy(secret, "/scripts/deploy-bot.sh"))
+	mux.HandleFunc("/deploy/dashboard", webhook.Deploy(secret, "/scripts/deploy-dashboard.sh"))
 
 	server := &http.Server{
 		Addr:              ":9000",
