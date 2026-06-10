@@ -1,107 +1,135 @@
 # deploy-gate
 
-A simple Go-based webhook server for safely triggering deployments from GitHub Actions without exposing the Docker Socket.
+A small Go-based webhook server for safely triggering local deployment scripts from GitHub Webhooks.
 
-`deploy-gate` receives GitHub Webhooks, verifies their signatures, and records deployment requests in a queue file.
+`deploy-gate` verifies GitHub webhook signatures and executes configured local scripts based on the request path. It is designed for environments where deployments should be triggered without exposing the Docker Socket through a webhook endpoint.
 
 ## Features
 
 - GitHub HMAC-SHA256 signature verification
-- No Docker Socket access required
-- File-based deployment queue
+- Path-based deployment routing
+- Configurable script execution
 - Single binary deployment
 - Uses only the Go standard library
+- No Docker Socket access required by `deploy-gate` itself
 
 ## Architecture
 
 ```text
-GitHub Actions
+GitHub Webhook
       │
       ▼
  deploy-gate
       │
-      ▼
- deploy.queue
+      ├─ /deploy/bot       → deploy-bot.sh
       │
-      ▼
- deploy worker
-      │
-      ▼
- docker compose up -d
+      └─ /deploy/dashboard → deploy-dashboard.sh
 ```
 
-`deploy-gate` does not perform deployments itself.
-
-Its responsibilities are intentionally limited to:
+`deploy-gate` is responsible for:
 
 1. Receiving webhook requests
-2. Verifying signatures
-3. Recording deployment requests
+2. Verifying GitHub signatures
+3. Selecting a configured route
+4. Executing the configured script
 
-Actual deployment logic is expected to be handled by a separate process.
+Actual deployment logic should be implemented in the script invoked by each route.
 
 ## Requirements
 
-- Go 1.24 or later
 - Linux
 - GitHub Webhooks
 
+Go is only required when building from source. Prebuilt binaries can be distributed through GitHub Releases.
+
 ## Configuration
 
-Configuration is provided through environment variables.
+`deploy-gate` uses environment variables and a JSON configuration file.
+
+### Environment variables
 
 | Variable        | Required | Description                                           |
 | --------------- | -------- | ----------------------------------------------------- |
 | `DEPLOY_SECRET` | Yes      | GitHub Webhook secret used for signature verification |
-| `QUEUE_DIR`     | Yes      | Directory where the queue file will be written        |
+| `DEPLOY_CONFIG` | Yes      | Path to the JSON configuration file                   |
 
 Example:
 
 ```env
 DEPLOY_SECRET=replace_me
-QUEUE_DIR=/queue
+DEPLOY_CONFIG=/etc/deploy-gate/config.json
 ```
+
+### Config file
+
+Example:
+
+```json
+{
+  "routes": [
+    {
+      "path": "/deploy/bot",
+      "script": "/opt/deploy-gate/scripts/deploy-bot.sh"
+    },
+    {
+      "path": "/deploy/dashboard",
+      "script": "/opt/deploy-gate/scripts/deploy-dashboard.sh"
+    }
+  ]
+}
+```
+
+Each route maps an HTTP path to a local script.
+
+The script path must be an absolute path.
 
 ## Build
 
 ```bash
-go build -o deploy-gate ./cmd/deploy-gate
+go build -o bin/deploy-gate ./cmd/deploy-gate
 ```
 
 ## Run
 
 ```bash
 DEPLOY_SECRET=replace_me \
-QUEUE_DIR=/queue \
-./deploy-gate
+DEPLOY_CONFIG=/etc/deploy-gate/config.json \
+./bin/deploy-gate
 ```
 
 The server listens on `:9000` by default.
 
-## Docker
+## systemd example
 
-Build:
+```ini
+[Unit]
+Description=deploy-gate
+After=network.target
 
-```bash
-docker build -t deploy-gate .
-```
+[Service]
+Type=simple
+Environment=DEPLOY_SECRET=replace_me
+Environment=DEPLOY_CONFIG=/etc/deploy-gate/config.json
+ExecStart=/usr/local/bin/deploy-gate
+Restart=always
+RestartSec=3
 
-Run:
-
-```bash
-docker run \
-  -e DEPLOY_SECRET=replace_me \
-  -e QUEUE_DIR=/queue \
-  -v $(pwd)/queue:/queue \
-  -p 9000:9000 \
-  deploy-gate
+[Install]
+WantedBy=multi-user.target
 ```
 
 ## API
 
-### POST /deploy
+### POST configured route
 
 Accepts webhook requests from GitHub.
+
+Example:
+
+```text
+POST /deploy/bot
+POST /deploy/dashboard
+```
 
 Signature header:
 
@@ -111,11 +139,11 @@ X-Hub-Signature-256: sha256=<signature>
 
 Responses:
 
-| Status | Description                 |
-| ------ | --------------------------- |
-| 204    | Deployment request queued   |
-| 403    | Invalid method or signature |
-| 500    | Failed to write queue file  |
+| Status | Description                  |
+| ------ | ---------------------------- |
+| 204    | Script executed successfully |
+| 403    | Invalid method or signature  |
+| 500    | Script execution failed      |
 
 ## Project Structure
 
@@ -125,25 +153,25 @@ deploy-gate/
 │   └── deploy-gate/
 │       └── main.go
 ├── internal/
-│   ├── queue/
-│   │   └── file.go
+│   ├── config/
+│   │   └── config.go
+│   ├── deploy/
+│   │   └── run.go
 │   ├── signature/
 │   │   └── hmac.go
 │   └── webhook/
 │       └── deploy.go
-├── Dockerfile
-├── compose.yml
 ├── go.mod
 └── README.md
 ```
 
 ## Security
 
-`deploy-gate` does not require access to the Docker Socket.
+`deploy-gate` does not require direct access to the Docker Socket.
 
 Exposing the Docker Socket through a webhook endpoint effectively grants remote control over containers and, in many cases, the host system itself.
 
-To reduce the attack surface, `deploy-gate` only verifies webhook signatures and writes deployment requests to a queue file. Deployment execution is intentionally delegated to a separate process.
+`deploy-gate` only verifies webhook signatures and executes explicitly configured local scripts. Keep scripts small, auditable, and restricted to the deployment actions they need to perform.
 
 ## License
 

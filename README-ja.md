@@ -1,107 +1,135 @@
 # deploy-gate
 
-Docker Socketを公開せずに、GitHub Actionsから安全にデプロイを行うためのシンプルなGo製Webhookサーバーです。
+GitHub Webhookから安全にローカルのデプロイスクリプトを実行するための、シンプルなGo製Webhookサーバーです。
 
-GitHub Webhookを受信し、署名を検証した上でデプロイ要求をキューファイルへ記録します。
+`deploy-gate` はGitHub Webhookの署名を検証し、リクエストパスに応じて設定済みのローカルスクリプトを実行します。Webhook経由でDocker Socketを公開せずにデプロイを起動することを目的としています。
 
 ## 特徴
 
 - GitHub HMAC-SHA256署名検証
-- Docker Socket不要
-- ファイルベースのデプロイキュー
+- パスごとのデプロイルーティング
+- 設定ファイルによるスクリプト指定
 - 単一バイナリで動作
 - 標準ライブラリのみ使用
+- `deploy-gate` 自体はDocker Socket不要
 
 ## アーキテクチャ
 
 ```text
-GitHub Actions
+GitHub Webhook
       │
       ▼
  deploy-gate
       │
-      ▼
- deploy.queue
+      ├─ /deploy/bot       → deploy-bot.sh
       │
-      ▼
- deploy worker
-      │
-      ▼
- docker compose up -d
+      └─ /deploy/dashboard → deploy-dashboard.sh
 ```
 
-`deploy-gate` 自身はデプロイを実行しません。
-
-責務は以下の3つだけです。
+`deploy-gate` の責務は以下です。
 
 1. Webhookを受信する
-2. 署名を検証する
-3. デプロイ要求を記録する
+2. GitHub署名を検証する
+3. 設定済みのルートを選択する
+4. 対応するスクリプトを実行する
 
-実際のデプロイ処理は別プロセスへ委譲することを想定しています。
+実際のデプロイ処理は、各ルートに設定したスクリプト側で実装します。
 
 ## 動作要件
 
-- Go 1.24以降
 - Linux
 - GitHub Webhook
 
+Goはソースからビルドする場合のみ必要です。ビルド済みバイナリを使用する場合、実行環境にGoは不要です。
+
 ## 設定
 
-環境変数で設定します。
+`deploy-gate` は環境変数とJSON設定ファイルで設定します。
 
-| 変数名        | 必須 | 説明                                 |
-| ------------- | ---- | ------------------------------------ |
-| DEPLOY_SECRET | ○    | GitHub Webhook Secret                |
-| QUEUE_DIR     | ○    | キューファイルを書き込むディレクトリ |
+### 環境変数
+
+| 変数名          | 必須 | 説明                   |
+| --------------- | ---- | ---------------------- |
+| `DEPLOY_SECRET` | ○    | GitHub Webhook Secret  |
+| `DEPLOY_CONFIG` | ○    | JSON設定ファイルのパス |
 
 例:
 
 ```env
 DEPLOY_SECRET=replace_me
-QUEUE_DIR=/queue
+DEPLOY_CONFIG=/etc/deploy-gate/config.json
 ```
+
+### 設定ファイル
+
+例:
+
+```json
+{
+  "routes": [
+    {
+      "path": "/deploy/bot",
+      "script": "/opt/deploy-gate/scripts/deploy-bot.sh"
+    },
+    {
+      "path": "/deploy/dashboard",
+      "script": "/opt/deploy-gate/scripts/deploy-dashboard.sh"
+    }
+  ]
+}
+```
+
+各ルートで、HTTPパスと実行するローカルスクリプトを対応付けます。
+
+スクリプトのパスは絶対パスで指定する必要があります。
 
 ## ビルド
 
 ```bash
-go build -o deploy-gate ./cmd/deploy-gate
+go build -o bin/deploy-gate ./cmd/deploy-gate
 ```
 
 ## 実行
 
 ```bash
 DEPLOY_SECRET=replace_me \
-QUEUE_DIR=/queue \
-./deploy-gate
+DEPLOY_CONFIG=/etc/deploy-gate/config.json \
+./bin/deploy-gate
 ```
 
 起動後は `:9000` で待ち受けます。
 
-## Docker
+## systemd設定例
 
-ビルド:
+```ini
+[Unit]
+Description=deploy-gate
+After=network.target
 
-```bash
-docker build -t deploy-gate .
-```
+[Service]
+Type=simple
+Environment=DEPLOY_SECRET=replace_me
+Environment=DEPLOY_CONFIG=/etc/deploy-gate/config.json
+ExecStart=/usr/local/bin/deploy-gate
+Restart=always
+RestartSec=3
 
-起動:
-
-```bash
-docker run \
-  -e DEPLOY_SECRET=replace_me \
-  -e QUEUE_DIR=/queue \
-  -v $(pwd)/queue:/queue \
-  -p 9000:9000 \
-  deploy-gate
+[Install]
+WantedBy=multi-user.target
 ```
 
 ## API
 
-### POST /deploy
+### POST 設定済みルート
 
 GitHub Webhookから送信されるリクエストを受け付けます。
+
+例:
+
+```text
+POST /deploy/bot
+POST /deploy/dashboard
+```
 
 署名ヘッダ:
 
@@ -111,11 +139,11 @@ X-Hub-Signature-256: sha256=<signature>
 
 レスポンス:
 
-| Status | Description                 |
-| ------ | --------------------------- |
-| 204    | Deployment request queued   |
-| 403    | Invalid method or signature |
-| 500    | Queue write failure         |
+| Status | Description                |
+| ------ | -------------------------- |
+| 204    | スクリプト実行成功         |
+| 403    | メソッド不正または署名不正 |
+| 500    | スクリプト実行失敗         |
 
 ## プロジェクト構成
 
@@ -125,25 +153,25 @@ deploy-gate/
 │   └── deploy-gate/
 │       └── main.go
 ├── internal/
-│   ├── queue/
-│   │   └── file.go
+│   ├── config/
+│   │   └── config.go
+│   ├── deploy/
+│   │   └── run.go
 │   ├── signature/
 │   │   └── hmac.go
 │   └── webhook/
 │       └── deploy.go
-├── Dockerfile
-├── compose.yml
 ├── go.mod
 └── README.md
 ```
 
 ## セキュリティ
 
-deploy-gate は Docker Socket を利用しません。
+`deploy-gate` 自体はDocker Socketを必要としません。
 
-Docker Socket をWebhook経由で公開すると、コンテナ操作やホストへのアクセスが可能となり、実質的にサーバーの管理権限を外部へ公開することになります。
+Docker SocketをWebhook経由で公開すると、コンテナ操作やホストへのアクセスが可能となり、実質的にサーバーの管理権限を外部へ公開することになります。
 
-deploy-gate は署名検証後にキューファイルを作成するだけの構成とすることで、攻撃面を最小限に抑えることを目的としています。
+`deploy-gate` は署名検証後、明示的に設定されたローカルスクリプトのみを実行します。スクリプトは小さく、監査しやすく、必要なデプロイ処理だけを行うようにしてください。
 
 ## ライセンス
 
