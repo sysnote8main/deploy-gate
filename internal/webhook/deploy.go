@@ -2,6 +2,7 @@ package webhook
 
 import (
 	"io"
+	"log"
 	"net/http"
 
 	"github.com/t1nyb0x/deploy-gate/internal/deploy"
@@ -33,6 +34,7 @@ func Deploy(secret, script string) http.HandlerFunc {
 		}
 
 		if err := deploy.Run(script); err != nil {
+			log.Printf("deploy failed: script=%s error=%v", script, err)
 			http.Error(w, "error", http.StatusInternalServerError)
 			return
 		}
