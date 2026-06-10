@@ -11,15 +11,10 @@ import (
 
 func main() {
 	secret := os.Getenv("DEPLOY_SECRET")
-	queueDir := os.Getenv("QUEUE_DIR")
 
 	if secret == "" {
 		log.Fatal("DEPLOY_SECRET is required")
 	}
-	if queueDir == "" {
-		log.Fatal("QUEUE_DIR is required")
-	}
-
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/deploy/bot", webhook.Deploy(secret, "/scripts/deploy-bot.sh"))
