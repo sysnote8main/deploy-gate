@@ -1,0 +1,8 @@
+{
+  "routes": [
+    {
+      "path": "/deploy/example",
+      "script": "/scripts/deploy-example.sh"
+    }
+  ]
+}

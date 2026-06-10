@@ -1,11 +1,16 @@
 services:
   deploy-gate:
-    build: .
+    image: ghcr.io/t1nyb0x/deploy-gate:latest
+    container_name: deploy-gate
     restart: unless-stopped
 
     environment:
       DEPLOY_SECRET: ${DEPLOY_SECRET}
-      QUEUE_DIR: /queue
+      DEPLOY_CONFIG: /etc/deploy-gate/config.json
+
+    volumes:
+      - ./config.json:/etc/deploy-gate/config.json:ro
+      - ./scripts:/scripts:ro
 
     ports:
       - "9000:9000"
