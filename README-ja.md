@@ -165,6 +165,56 @@ deploy-gate/
 └── README.md
 ```
 
+## Docker
+
+設定したスクリプトがコンテナ内で完結する場合、Dockerで実行できます。
+
+例:
+
+```bash
+cp compose.yml.example compose.yml
+cp config.json.example config.json
+mkdir -p scripts
+```
+
+compose.yml の例:
+
+```yaml
+services:
+  deploy-gate:
+    image: ghcr.io/t1nyb0x/deploy-gate:latest
+    container_name: deploy-gate
+    restart: unless-stopped
+
+    environment:
+      DEPLOY_SECRET: ${DEPLOY_SECRET}
+      DEPLOY_CONFIG: /etc/deploy-gate/config.json
+
+    volumes:
+      - ./config.json:/etc/deploy-gate/config.json:ro
+      - ./scripts:/scripts:ro
+
+    ports:
+      - "9000:9000"
+```
+
+config.json の例:
+
+```json
+{
+  "routes": [
+    {
+      "path": "/deploy/example",
+      "script": "/scripts/deploy-example.sh"
+    }
+  ]
+}
+```
+
+deploy-gate 自体はDocker Socketを必要としません。
+
+デプロイスクリプトからホストのDockerを操作したい場合は、Docker Socketをコンテナへマウントするより、deploy-gate をsystemdサービスとしてホスト上で実行する構成を検討してください。
+
 ## セキュリティ
 
 `deploy-gate` 自体はDocker Socketを必要としません。

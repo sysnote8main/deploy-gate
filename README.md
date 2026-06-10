@@ -165,6 +165,56 @@ deploy-gate/
 └── README.md
 ```
 
+## Docker
+
+Docker can be used when the configured scripts can run inside the container.
+
+Example:
+
+```bash
+cp compose.yml.example compose.yml
+cp config.json.example config.json
+mkdir -p scripts
+```
+
+Example compose.yml:
+
+```yaml
+services:
+  deploy-gate:
+    image: ghcr.io/t1nyb0x/deploy-gate:latest
+    container_name: deploy-gate
+    restart: unless-stopped
+
+    environment:
+      DEPLOY_SECRET: ${DEPLOY_SECRET}
+      DEPLOY_CONFIG: /etc/deploy-gate/config.json
+
+    volumes:
+      - ./config.json:/etc/deploy-gate/config.json:ro
+      - ./scripts:/scripts:ro
+
+    ports:
+      - "9000:9000"
+```
+
+Example config.json:
+
+```json
+{
+  "routes": [
+    {
+      "path": "/deploy/example",
+      "script": "/scripts/deploy-example.sh"
+    }
+  ]
+}
+```
+
+deploy-gate itself does not require Docker Socket access.
+
+If your deployment script needs to control Docker on the host, consider running deploy-gate as a host-level systemd service instead of mounting the Docker Socket into the container.
+
 ## Security
 
 `deploy-gate` does not require direct access to the Docker Socket.
