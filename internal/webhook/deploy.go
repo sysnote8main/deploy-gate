@@ -45,14 +45,15 @@ func Deploy(secret, script string) http.HandlerFunc {
 			return
 		}
 
-		output, err := deploy.Run(script)
-		if err != nil {
-			log.Printf("deploy failed: script=%s error=%v", script, err)
-			writeJSON(w, http.StatusInternalServerError, deployResponse{Status: "error", Output: output})
-			return
-		}
+		go func() {
+			output, err := deploy.Run(script)
+			if err != nil {
+				log.Printf("deploy failed: script=%s error=%v output=%s", script, err, output)
+				return
+			}
+			log.Printf("deploy succeeded: script=%s output=%s", script, output)
+		}()
 
-		log.Printf("deploy succeeded: script=%s", script)
-		writeJSON(w, http.StatusOK, deployResponse{Status: "ok", Output: output})
+		writeJSON(w, http.StatusAccepted, deployResponse{Status: "accepted"})
 	}
 }
