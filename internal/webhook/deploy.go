@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
@@ -10,6 +11,17 @@ import (
 )
 
 const maxBodySize = 1 << 20 // 1MB
+
+type deployResponse struct {
+	Status string `json:"status"`
+	Output string `json:"output,omitempty"`
+}
+
+func writeJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(v)
+}
 
 func Deploy(secret, script string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -33,14 +45,14 @@ func Deploy(secret, script string) http.HandlerFunc {
 			return
 		}
 
-		if err := deploy.Run(script); err != nil {
+		output, err := deploy.Run(script)
+		if err != nil {
 			log.Printf("deploy failed: script=%s error=%v", script, err)
-			http.Error(w, "error", http.StatusInternalServerError)
+			writeJSON(w, http.StatusInternalServerError, deployResponse{Status: "error", Output: output})
 			return
 		}
 
 		log.Printf("deploy succeeded: script=%s", script)
-
-		w.WriteHeader(http.StatusNoContent)
+		writeJSON(w, http.StatusOK, deployResponse{Status: "ok", Output: output})
 	}
 }
