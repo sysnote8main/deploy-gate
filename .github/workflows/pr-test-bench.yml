@@ -91,15 +91,15 @@ jobs:
         with:
           go-version: "1.24"
 
-      - name: Run benchmarks
+      - name: Run benchmarks (JSON)
         run: |
-          go test -bench=. -benchmem -count=3 \
-            -run=^$ ./... 2>&1 | tee bench_new.txt
+          go test -bench=. -benchmem -count=3 -json \
+            -run=^$ ./... > bench_new.json
 
       - name: Download previous benchmark results
         uses: actions/cache@v4
         with:
-          path: ./bench_old.txt
+          path: ./bench_old.json
           key: benchmark-${{ github.base_ref }}-${{ github.event.pull_request.head.sha }}
           restore-keys: |
             benchmark-${{ github.base_ref }}-
@@ -108,7 +108,7 @@ jobs:
       - name: Generate benchmark report
         run: |
           python3 << 'PYEOF'
-          import re
+          import json
           import os
 
           def parse_benchmarks(filename):
@@ -117,62 +117,82 @@ jobs:
                   return results
               with open(filename, 'r') as f:
                   for line in f:
+                      try:
+                          event = json.loads(line)
+                      except json.JSONDecodeError:
+                          continue
+                      if event.get('Action') != 'output':
+                          continue
+                      if 'Benchmark' not in event.get('Output', ''):
+                          continue
+                      # Parse: BenchmarkXXX-8    1234    123456 ns/op    1234 B/op    12 allocs/op
+                      import re
                       m = re.match(
-                          r'^(Benchmark\w+-\d+)\s+(\d+)\s+'
+                          r'Benchmark(\w+)-\d+\s+(\d+)\s+'
                           r'(\d+)\s+ns/op\s+(\d+)\s+B/op\s+'
                           r'(\d+)\s+allocs/op',
-                          line
+                          event['Output'].strip()
                       )
                       if m:
-                          results[m.group(1)] = {
+                          name = f'Benchmark{m.group(1)}'
+                          results[name] = {
+                              'iter': int(m.group(2)),
                               'ns': int(m.group(3)),
                               'b': int(m.group(4)),
+                              'a': int(m.group(5)),
                           }
               return results
 
-          has_old = os.path.exists('bench_old.txt')
-          old = parse_benchmarks('bench_old.txt')
-          new = parse_benchmarks('bench_new.txt')
+          has_old = os.path.exists('bench_old.json')
+          old = parse_benchmarks('bench_old.json')
+          new = parse_benchmarks('bench_new.json')
 
           lines = []
           lines.append('## 🚀 Benchmark Results\n')
 
           if not has_old:
               lines.append('> ⚠️ No previous benchmark found. This is the baseline.\n')
-              lines.append('| Benchmark | ns/op | B/op |')
-              lines.append('|-----------|-------|------|')
+              lines.append('| Benchmark | Iterations | ns/op | B/op | allocs/op |')
+              lines.append('|-----------|------------|-------|------|-----------|')
               for name in sorted(new):
                   n = new[name]
-                  lines.append(f'| {name} | {n["ns"]:,} | {n["b"]:,} |')
+                  lines.append(
+                      f'| {name} '
+                      f'| {n["iter"]:,} '
+                      f'| {n["ns"]:,} '
+                      f'| {n["b"]:,} '
+                      f'| {n["a"]:,} |'
+                  )
           else:
-              lines.append('| Benchmark | Old ns/op | New ns/op | Δ | Old B/op | New B/op | Δ |')
-              lines.append('|-----------|-----------|-----------|---|----------|----------|---|')
+              lines.append('| Benchmark | Before | After | Change |')
+              lines.append('|-----------|--------|-------|--------|')
               for name in sorted(new):
                   n = new[name]
                   if name in old:
                       o = old[name]
                       ns_d = (n['ns'] - o['ns']) / o['ns'] * 100
-                      b_d = (n['b'] - o['b']) / o['b'] * 100
-                      ns_i = '🟢' if ns_d <= 0 else '🔴'
-                      b_i = '🟢' if b_d <= 0 else '🔴'
+                      icon = '🟢' if ns_d <= 0 else '🔴'
                       lines.append(
                           f'| {name} '
-                          f'| {o["ns"]:,} | {n["ns"]:,} | {ns_i}{ns_d:+.1f}% '
-                          f'| {o["b"]:,} | {n["b"]:,} | {b_i}{b_d:+.1f}% |'
+                          f'| {o["ns"]:,} ns, {o["b"]:,} B, {o["a"]:,} allocs '
+                          f'| {n["ns"]:,} ns, {n["b"]:,} B, {n["a"]:,} allocs '
+                          f'| {icon} {ns_d:+.1f}% |'
                       )
                   else:
                       lines.append(
                           f'| {name} '
-                          f'| - | {n["ns"]:,} | 🆕 '
-                          f'| - | {n["b"]:,} | 🆕 |'
+                          f'| - '
+                          f'| {n["ns"]:,} ns, {n["b"]:,} B, {n["a"]:,} allocs '
+                          f'| 🆕 |'
                       )
               for name in sorted(old):
                   if name not in new:
                       o = old[name]
                       lines.append(
                           f'| {name} '
-                          f'| {o["ns"]:,} | - | ❌ '
-                          f'| {o["b"]:,} | - | ❌ |'
+                          f'| {o["ns"]:,} ns, {o["b"]:,} B, {o["a"]:,} allocs '
+                          f'| - '
+                          f'| ❌ |'
                       )
 
           with open('bench_report.md', 'w') as f:
@@ -219,10 +239,10 @@ jobs:
       - name: Update baseline on merge
         if: github.event.pull_request.merged == true
         run: |
-          cp bench_new.txt bench_old.txt
+          cp bench_new.json bench_old.json
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout main
-          git add -f bench_old.txt || true
+          git add -f bench_old.json || true
           git commit -m "chore: update benchmark baseline [skip ci]" || true
           git push || true
