@@ -105,14 +105,16 @@ jobs:
             benchmark-${{ github.base_ref }}-
             benchmark-main-
 
-      - name: Generate benchmark comparison
-        if: hashFiles('bench_old.txt') != ''
+      - name: Generate benchmark report
         run: |
           python3 << 'PYEOF'
           import re
+          import os
 
           def parse_benchmarks(filename):
               results = {}
+              if not os.path.exists(filename):
+                  return results
               with open(filename, 'r') as f:
                   for line in f:
                       m = re.match(
@@ -128,49 +130,56 @@ jobs:
                           }
               return results
 
+          has_old = os.path.exists('bench_old.txt')
           old = parse_benchmarks('bench_old.txt')
           new = parse_benchmarks('bench_new.txt')
 
           lines = []
           lines.append('## 🚀 Benchmark Results\n')
-          lines.append('| Benchmark | Old ns/op | New ns/op | Δ | Old B/op | New B/op | Δ |')
-          lines.append('|-----------|-----------|-----------|---|----------|----------|---|')
 
-          for name in sorted(new):
-              n = new[name]
-              if name in old:
-                  o = old[name]
-                  ns_d = (n['ns'] - o['ns']) / o['ns'] * 100
-                  b_d = (n['b'] - o['b']) / o['b'] * 100
-                  ns_i = '🟢' if ns_d <= 0 else '🔴'
-                  b_i = '🟢' if b_d <= 0 else '🔴'
-                  lines.append(
-                      f'| {name} '
-                      f'| {o["ns"]:,} | {n["ns"]:,} | {ns_i}{ns_d:+.1f}% '
-                      f'| {o["b"]:,} | {n["b"]:,} | {b_i}{b_d:+.1f}% |'
-                  )
-              else:
-                  lines.append(
-                      f'| {name} '
-                      f'| - | {n["ns"]:,} | 🆕 '
-                      f'| - | {n["b"]:,} | 🆕 |'
-                  )
-
-          for name in sorted(old):
-              if name not in new:
-                  o = old[name]
-                  lines.append(
-                      f'| {name} '
-                      f'| {o["ns"]:,} | - | ❌ '
-                      f'| {o["b"]:,} | - | ❌ |'
-                  )
+          if not has_old:
+              lines.append('> ⚠️ No previous benchmark found. This is the baseline.\n')
+              lines.append('| Benchmark | ns/op | B/op |')
+              lines.append('|-----------|-------|------|')
+              for name in sorted(new):
+                  n = new[name]
+                  lines.append(f'| {name} | {n["ns"]:,} | {n["b"]:,} |')
+          else:
+              lines.append('| Benchmark | Old ns/op | New ns/op | Δ | Old B/op | New B/op | Δ |')
+              lines.append('|-----------|-----------|-----------|---|----------|----------|---|')
+              for name in sorted(new):
+                  n = new[name]
+                  if name in old:
+                      o = old[name]
+                      ns_d = (n['ns'] - o['ns']) / o['ns'] * 100
+                      b_d = (n['b'] - o['b']) / o['b'] * 100
+                      ns_i = '🟢' if ns_d <= 0 else '🔴'
+                      b_i = '🟢' if b_d <= 0 else '🔴'
+                      lines.append(
+                          f'| {name} '
+                          f'| {o["ns"]:,} | {n["ns"]:,} | {ns_i}{ns_d:+.1f}% '
+                          f'| {o["b"]:,} | {n["b"]:,} | {b_i}{b_d:+.1f}% |'
+                      )
+                  else:
+                      lines.append(
+                          f'| {name} '
+                          f'| - | {n["ns"]:,} | 🆕 '
+                          f'| - | {n["b"]:,} | 🆕 |'
+                      )
+              for name in sorted(old):
+                  if name not in new:
+                      o = old[name]
+                      lines.append(
+                          f'| {name} '
+                          f'| {o["ns"]:,} | - | ❌ '
+                          f'| {o["b"]:,} | - | ❌ |'
+                      )
 
           with open('bench_report.md', 'w') as f:
               f.write('\n'.join(lines) + '\n')
           PYEOF
 
       - name: Comment benchmarks on PR
-        if: hashFiles('bench_old.txt') != ''
         uses: actions/github-script@v7
         with:
           script: |
