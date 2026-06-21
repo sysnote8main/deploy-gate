@@ -1,0 +1,219 @@
+name: PR - Test & Benchmark
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Run tests with coverage
+        run: |
+          go test -v -coverprofile=coverage.out -covermode=atomic ./...
+          go tool cover -func=coverage.out > coverage_summary.txt
+          COVERAGE=$(grep 'total:' coverage_summary.txt | awk '{print $3}')
+          echo "coverage=$COVERAGE" >> "$GITHUB_OUTPUT"
+          cat coverage_summary.txt
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            coverage.out
+            coverage_summary.txt
+
+      - name: Comment coverage on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const coverage = fs.readFileSync('coverage_summary.txt', 'utf8');
+            const totalMatch = coverage.match(
+              /total:\s+\(statements\)\s+(\d+\.\d+%)/
+            );
+            const total = totalMatch ? totalMatch[1] : 'N/A';
+            let body = `## 📊 Test Coverage\n\n`;
+            body += `**Total Coverage: ${total}**\n\n`;
+            body += `<details>\n<summary>Coverage Details</summary>\n\n`;
+            body += '```\n' + coverage + '```\n';
+            body += `</details>\n`;
+
+            const { data: comments } =
+              await github.rest.issues.listComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+              });
+
+            const botComment = comments.find(
+              (c) =>
+                c.user.type === 'Bot' &&
+                c.body.includes('📊 Test Coverage')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body,
+              });
+            }
+
+  benchmark:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Run benchmarks
+        run: |
+          go test -bench=. -benchmem -count=3 \
+            -run=^$ ./... 2>&1 | tee bench_new.txt
+
+      - name: Download previous benchmark results
+        uses: actions/cache@v4
+        with:
+          path: ./bench_old.txt
+          key: benchmark-${{ github.base_ref }}-${{ github.event.pull_request.head.sha }}
+          restore-keys: |
+            benchmark-${{ github.base_ref }}-
+            benchmark-main-
+
+      - name: Generate benchmark comparison
+        if: hashFiles('bench_old.txt') != ''
+        run: |
+          python3 << 'PYEOF'
+          import re
+
+          def parse_benchmarks(filename):
+              results = {}
+              with open(filename, 'r') as f:
+                  for line in f:
+                      m = re.match(
+                          r'^(Benchmark\w+-\d+)\s+(\d+)\s+'
+                          r'(\d+)\s+ns/op\s+(\d+)\s+B/op\s+'
+                          r'(\d+)\s+allocs/op',
+                          line
+                      )
+                      if m:
+                          results[m.group(1)] = {
+                              'ns': int(m.group(3)),
+                              'b': int(m.group(4)),
+                          }
+              return results
+
+          old = parse_benchmarks('bench_old.txt')
+          new = parse_benchmarks('bench_new.txt')
+
+          lines = []
+          lines.append('## 🚀 Benchmark Results\n')
+          lines.append('| Benchmark | Old ns/op | New ns/op | Δ | Old B/op | New B/op | Δ |')
+          lines.append('|-----------|-----------|-----------|---|----------|----------|---|')
+
+          for name in sorted(new):
+              n = new[name]
+              if name in old:
+                  o = old[name]
+                  ns_d = (n['ns'] - o['ns']) / o['ns'] * 100
+                  b_d = (n['b'] - o['b']) / o['b'] * 100
+                  ns_i = '🟢' if ns_d <= 0 else '🔴'
+                  b_i = '🟢' if b_d <= 0 else '🔴'
+                  lines.append(
+                      f'| {name} '
+                      f'| {o["ns"]:,} | {n["ns"]:,} | {ns_i}{ns_d:+.1f}% '
+                      f'| {o["b"]:,} | {n["b"]:,} | {b_i}{b_d:+.1f}% |'
+                  )
+              else:
+                  lines.append(
+                      f'| {name} '
+                      f'| - | {n["ns"]:,} | 🆕 '
+                      f'| - | {n["b"]:,} | 🆕 |'
+                  )
+
+          for name in sorted(old):
+              if name not in new:
+                  o = old[name]
+                  lines.append(
+                      f'| {name} '
+                      f'| {o["ns"]:,} | - | ❌ '
+                      f'| {o["b"]:,} | - | ❌ |'
+                  )
+
+          with open('bench_report.md', 'w') as f:
+              f.write('\n'.join(lines) + '\n')
+          PYEOF
+
+      - name: Comment benchmarks on PR
+        if: hashFiles('bench_old.txt') != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('bench_report.md', 'utf8');
+            const body = `## 🚀 Benchmark Results\n\n${report}`;
+
+            const { data: comments } =
+              await github.rest.issues.listComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+              });
+
+            const botComment = comments.find(
+              (c) =>
+                c.user.type === 'Bot' &&
+                c.body.includes('🚀 Benchmark Results')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body,
+              });
+            }
+
+      - name: Update baseline on merge
+        if: github.event.pull_request.merged == true
+        run: |
+          cp bench_new.txt bench_old.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout main
+          git add -f bench_old.txt || true
+          git commit -m "chore: update benchmark baseline [skip ci]" || true
+          git push || true
