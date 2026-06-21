@@ -82,6 +82,12 @@ jobs:
   benchmark:
     runs-on: ubuntu-latest
     needs: test
+    strategy:
+      matrix:
+        pkg:
+          - internal/signature
+          - internal/deploy
+          - internal/webhook
     steps:
       - uses: actions/checkout@v4
         with:
@@ -91,86 +97,145 @@ jobs:
         with:
           go-version: "1.24"
 
-      - name: Run benchmarks
+      - name: Run benchmark (${{ matrix.pkg }})
         run: |
-          go test -bench=. -benchmem -count=3 \
-            -run=^$ ./... 2>&1 | tee bench_new.txt
+          PKG=$(echo "${{ matrix.pkg }}" | tr '/' '-')
+          go test -bench=. -benchmem -count=3 -json \
+            -run=^$ ./${{ matrix.pkg }}/... > "bench-${PKG}.json"
+
+      - name: Upload benchmark result
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ matrix.pkg }}
+          path: bench-*.json
+
+  report:
+    runs-on: ubuntu-latest
+    needs: benchmark
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all benchmark results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bench-*
+          merge-multiple: true
+          path: ./benchmarks
 
       - name: Download previous benchmark results
         uses: actions/cache@v4
         with:
-          path: ./bench_old.txt
+          path: ./bench_old.json
           key: benchmark-${{ github.base_ref }}-${{ github.event.pull_request.head.sha }}
           restore-keys: |
             benchmark-${{ github.base_ref }}-
             benchmark-main-
 
-      - name: Generate benchmark comparison
-        if: hashFiles('bench_old.txt') != ''
+      - name: Generate benchmark report
         run: |
           python3 << 'PYEOF'
-          import re
+          import json
+          import os
+          import glob
 
           def parse_benchmarks(filename):
               results = {}
+              if not os.path.exists(filename):
+                  return results
               with open(filename, 'r') as f:
                   for line in f:
+                      try:
+                          event = json.loads(line)
+                      except json.JSONDecodeError:
+                          continue
+                      if event.get('Action') != 'output':
+                          continue
+                      out = event.get('Output', '').strip()
+                      if 'Benchmark' not in out or 'ns/op' not in out:
+                          continue
+                      import re
                       m = re.match(
-                          r'^(Benchmark\w+-\d+)\s+(\d+)\s+'
+                          r'Benchmark(\w+)-\d+\s+(\d+)\s+'
                           r'(\d+)\s+ns/op\s+(\d+)\s+B/op\s+'
                           r'(\d+)\s+allocs/op',
-                          line
+                          out
                       )
                       if m:
-                          results[m.group(1)] = {
+                          name = f'Benchmark{m.group(1)}'
+                          results[name] = {
+                              'iter': int(m.group(2)),
                               'ns': int(m.group(3)),
                               'b': int(m.group(4)),
+                              'a': int(m.group(5)),
                           }
               return results
 
-          old = parse_benchmarks('bench_old.txt')
-          new = parse_benchmarks('bench_new.txt')
+          # Parse all new benchmark files
+          new = {}
+          for f in glob.glob('benchmarks/bench-*.json'):
+              new.update(parse_benchmarks(f))
+
+          # Parse old benchmarks
+          has_old = os.path.exists('bench_old.json')
+          old = parse_benchmarks('bench_old.json') if has_old else {}
 
           lines = []
           lines.append('## 🚀 Benchmark Results\n')
-          lines.append('| Benchmark | Old ns/op | New ns/op | Δ | Old B/op | New B/op | Δ |')
-          lines.append('|-----------|-----------|-----------|---|----------|----------|---|')
 
-          for name in sorted(new):
-              n = new[name]
-              if name in old:
-                  o = old[name]
-                  ns_d = (n['ns'] - o['ns']) / o['ns'] * 100
-                  b_d = (n['b'] - o['b']) / o['b'] * 100
-                  ns_i = '🟢' if ns_d <= 0 else '🔴'
-                  b_i = '🟢' if b_d <= 0 else '🔴'
+          if not new:
+              lines.append('> ⚠️ No benchmark results found.\n')
+          elif not has_old:
+              lines.append('> ⚠️ No previous benchmark. This is the baseline.\n')
+              lines.append('| Benchmark | Iterations | ns/op | B/op | allocs/op |')
+              lines.append('|-----------|------------|-------|------|-----------|')
+              for name in sorted(new):
+                  n = new[name]
                   lines.append(
                       f'| {name} '
-                      f'| {o["ns"]:,} | {n["ns"]:,} | {ns_i}{ns_d:+.1f}% '
-                      f'| {o["b"]:,} | {n["b"]:,} | {b_i}{b_d:+.1f}% |'
+                      f'| {n["iter"]:,} '
+                      f'| {n["ns"]:,} '
+                      f'| {n["b"]:,} '
+                      f'| {n["a"]:,} |'
                   )
-              else:
-                  lines.append(
-                      f'| {name} '
-                      f'| - | {n["ns"]:,} | 🆕 '
-                      f'| - | {n["b"]:,} | 🆕 |'
-                  )
-
-          for name in sorted(old):
-              if name not in new:
-                  o = old[name]
-                  lines.append(
-                      f'| {name} '
-                      f'| {o["ns"]:,} | - | ❌ '
-                      f'| {o["b"]:,} | - | ❌ |'
-                  )
+          else:
+              lines.append('| Benchmark | Before | After | Change |')
+              lines.append('|-----------|--------|-------|--------|')
+              for name in sorted(new):
+                  n = new[name]
+                  if name in old:
+                      o = old[name]
+                      ns_d = (n['ns'] - o['ns']) / o['ns'] * 100
+                      icon = '🟢' if ns_d <= 0 else '🔴'
+                      lines.append(
+                          f'| {name} '
+                          f'| {o["ns"]:,} ns, {o["b"]:,} B, {o["a"]:,} allocs '
+                          f'| {n["ns"]:,} ns, {n["b"]:,} B, {n["a"]:,} allocs '
+                          f'| {icon} {ns_d:+.1f}% |'
+                      )
+                  else:
+                      lines.append(
+                          f'| {name} '
+                          f'| - '
+                          f'| {n["ns"]:,} ns, {n["b"]:,} B, {n["a"]:,} allocs '
+                          f'| 🆕 |'
+                      )
+              for name in sorted(old):
+                  if name not in new:
+                      o = old[name]
+                      lines.append(
+                          f'| {name} '
+                          f'| {o["ns"]:,} ns, {o["b"]:,} B, {o["a"]:,} allocs '
+                          f'| - '
+                          f'| ❌ |'
+                      )
 
           with open('bench_report.md', 'w') as f:
               f.write('\n'.join(lines) + '\n')
           PYEOF
 
       - name: Comment benchmarks on PR
-        if: hashFiles('bench_old.txt') != ''
         uses: actions/github-script@v7
         with:
           script: |
@@ -210,10 +275,30 @@ jobs:
       - name: Update baseline on merge
         if: github.event.pull_request.merged == true
         run: |
-          cp bench_new.txt bench_old.txt
+          # Merge all benchmark files
+          python3 << 'PYEOF'
+          import json
+          import glob
+
+          merged = {}
+          for f in glob.glob('benchmarks/bench-*.json'):
+              with open(f, 'r') as fh:
+                  for line in fh:
+                      try:
+                          event = json.loads(line)
+                      except:
+                          continue
+                      if event.get('Action') == 'output' and 'ns/op' in event.get('Output', ''):
+                          merged[event['Output'].strip()] = True
+
+          with open('bench_old.json', 'w') as out:
+              for line in merged:
+                  out.write(json.dumps({'Action': 'output', 'Output': line + '\n'}) + '\n')
+          PYEOF
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout main
-          git add -f bench_old.txt || true
+          git add -f bench_old.json || true
           git commit -m "chore: update benchmark baseline [skip ci]" || true
           git push || true

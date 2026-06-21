@@ -2,11 +2,12 @@ package main
 
 import (
 	"log"
-	"net/http"
 	"os"
-	"time"
 
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/t1nyb0x/deploy-gate/internal/config"
+	"github.com/t1nyb0x/deploy-gate/internal/deploy"
 	"github.com/t1nyb0x/deploy-gate/internal/webhook"
 )
 
@@ -27,21 +28,33 @@ func main() {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
-	mux := http.NewServeMux()
+	// Bounded worker pool — prevents goroutine explosion under load.
+	pool := deploy.NewPool(0) // 0 = auto (2x CPU cores)
+	defer pool.Shutdown()
 
-	for _, route := range cfg.Routes {
-		log.Printf("register route: path=%s script=%s", route.Path, route.Script)
-		mux.HandleFunc(route.Path, webhook.Deploy(secret, route.Script))
-	}
+	app := fiber.New(fiber.Config{
+		Concurrency:       256 * 1024,
+		DisableKeepalive: false,
+		EnablePrintRoutes: true,
+		StrictRouting:     true,
+		AppName:           "deploy-gate",
+	})
 
-	server := &http.Server{
-		Addr:              ":9000",
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      30 * time.Second,
+	app.Use(recover.New())
+
+	// Register webhook routes.
+	routes := make([]struct {
+		Path   string
+		Script string
+	}, len(cfg.Routes))
+	for i, r := range cfg.Routes {
+		routes[i] = struct {
+			Path   string
+			Script string
+		}{Path: r.Path, Script: r.Script}
 	}
+	webhook.RegisterRoutes(app, secret, pool, routes)
 
 	log.Println("listening on :9000")
-	log.Fatal(server.ListenAndServe())
+	log.Fatal(app.Listen(":9000"))
 }

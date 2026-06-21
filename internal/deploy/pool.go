@@ -8,7 +8,10 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 )
+
+const timeout = 5 * time.Minute
 
 // Pool is a bounded worker pool that limits concurrent deploys.
 type Pool struct {

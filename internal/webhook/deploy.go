@@ -1,11 +1,9 @@
 package webhook
 
 import (
-	"encoding/json"
-	"io"
 	"log"
-	"net/http"
 
+	"github.com/gofiber/fiber/v2"
 	"github.com/t1nyb0x/deploy-gate/internal/deploy"
 	"github.com/t1nyb0x/deploy-gate/internal/signature"
 )
@@ -14,46 +12,38 @@ const maxBodySize = 1 << 20 // 1MB
 
 type deployResponse struct {
 	Status string `json:"status"`
-	Output string `json:"output,omitempty"`
 }
 
-func writeJSON(w http.ResponseWriter, code int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-func Deploy(secret, script string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
+// Handler returns a Fiber handler that validates webhook signature and enqueues deploy.
+func Handler(secret string, pool *deploy.Pool, script string) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		if c.Method() != fiber.MethodPost {
+			return c.Status(fiber.StatusForbidden).SendString("forbidden")
 		}
 
-		r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
-		defer r.Body.Close()
-
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
+		body := c.Body()
+		if len(body) > maxBodySize {
+			return c.Status(fiber.StatusRequestEntityTooLarge).SendString("body too large")
 		}
 
-		sig := r.Header.Get("X-Hub-Signature-256")
+		sig := c.Get("X-Hub-Signature-256")
 		if !signature.Validate(body, sig, secret) {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
+			return c.Status(fiber.StatusForbidden).SendString("forbidden")
 		}
 
-		go func() {
-			output, err := deploy.Run(script)
-			if err != nil {
-				log.Printf("deploy failed: script=%s error=%v output=%s", script, err, output)
-				return
-			}
-			log.Printf("deploy succeeded: script=%s output=%s", script, output)
-		}()
+		pool.Run(script)
 
-		writeJSON(w, http.StatusAccepted, deployResponse{Status: "accepted"})
+		return c.Status(fiber.StatusAccepted).JSON(deployResponse{Status: "accepted"})
+	}
+}
+
+// RegisterRoutes registers all configured routes on the Fiber app.
+func RegisterRoutes(app *fiber.App, secret string, pool *deploy.Pool, routes []struct {
+	Path   string
+	Script string
+}) {
+	for _, route := range routes {
+		log.Printf("register route: path=%s script=%s", route.Path, route.Script)
+		app.Post(route.Path, Handler(secret, pool, route.Script))
 	}
 }
