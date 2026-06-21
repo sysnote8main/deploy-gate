@@ -82,6 +82,12 @@ jobs:
   benchmark:
     runs-on: ubuntu-latest
     needs: test
+    strategy:
+      matrix:
+        pkg:
+          - internal/signature
+          - internal/deploy
+          - internal/webhook
     steps:
       - uses: actions/checkout@v4
         with:
@@ -91,10 +97,32 @@ jobs:
         with:
           go-version: "1.24"
 
-      - name: Run benchmarks (JSON)
+      - name: Run benchmark (${{ matrix.pkg }})
         run: |
+          PKG=$(echo "${{ matrix.pkg }}" | tr '/' '-')
           go test -bench=. -benchmem -count=3 -json \
-            -run=^$ ./... > bench_new.json
+            -run=^$ ./${{ matrix.pkg }}/... > "bench-${PKG}.json"
+
+      - name: Upload benchmark result
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ matrix.pkg }}
+          path: bench-*.json
+
+  report:
+    runs-on: ubuntu-latest
+    needs: benchmark
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all benchmark results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bench-*
+          merge-multiple: true
+          path: ./benchmarks
 
       - name: Download previous benchmark results
         uses: actions/cache@v4
@@ -110,6 +138,7 @@ jobs:
           python3 << 'PYEOF'
           import json
           import os
+          import glob
 
           def parse_benchmarks(filename):
               results = {}
@@ -123,15 +152,15 @@ jobs:
                           continue
                       if event.get('Action') != 'output':
                           continue
-                      if 'Benchmark' not in event.get('Output', ''):
+                      out = event.get('Output', '').strip()
+                      if 'Benchmark' not in out or 'ns/op' not in out:
                           continue
-                      # Parse: BenchmarkXXX-8    1234    123456 ns/op    1234 B/op    12 allocs/op
                       import re
                       m = re.match(
                           r'Benchmark(\w+)-\d+\s+(\d+)\s+'
                           r'(\d+)\s+ns/op\s+(\d+)\s+B/op\s+'
                           r'(\d+)\s+allocs/op',
-                          event['Output'].strip()
+                          out
                       )
                       if m:
                           name = f'Benchmark{m.group(1)}'
@@ -143,15 +172,22 @@ jobs:
                           }
               return results
 
+          # Parse all new benchmark files
+          new = {}
+          for f in glob.glob('benchmarks/bench-*.json'):
+              new.update(parse_benchmarks(f))
+
+          # Parse old benchmarks
           has_old = os.path.exists('bench_old.json')
-          old = parse_benchmarks('bench_old.json')
-          new = parse_benchmarks('bench_new.json')
+          old = parse_benchmarks('bench_old.json') if has_old else {}
 
           lines = []
           lines.append('## 🚀 Benchmark Results\n')
 
-          if not has_old:
-              lines.append('> ⚠️ No previous benchmark found. This is the baseline.\n')
+          if not new:
+              lines.append('> ⚠️ No benchmark results found.\n')
+          elif not has_old:
+              lines.append('> ⚠️ No previous benchmark. This is the baseline.\n')
               lines.append('| Benchmark | Iterations | ns/op | B/op | allocs/op |')
               lines.append('|-----------|------------|-------|------|-----------|')
               for name in sorted(new):
@@ -239,7 +275,27 @@ jobs:
       - name: Update baseline on merge
         if: github.event.pull_request.merged == true
         run: |
-          cp bench_new.json bench_old.json
+          # Merge all benchmark files
+          python3 << 'PYEOF'
+          import json
+          import glob
+
+          merged = {}
+          for f in glob.glob('benchmarks/bench-*.json'):
+              with open(f, 'r') as fh:
+                  for line in fh:
+                      try:
+                          event = json.loads(line)
+                      except:
+                          continue
+                      if event.get('Action') == 'output' and 'ns/op' in event.get('Output', ''):
+                          merged[event['Output'].strip()] = True
+
+          with open('bench_old.json', 'w') as out:
+              for line in merged:
+                  out.write(json.dumps({'Action': 'output', 'Output': line + '\n'}) + '\n')
+          PYEOF
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout main
